@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import queue
+import re
 import threading
 import traceback
 from pathlib import Path
@@ -24,7 +25,6 @@ class MuSplitterApp(tk.Tk):
         self.tlife_var = tk.StringVar()
         self.slice_seconds_var = tk.StringVar(value="5")
         self.drop_minutes_var = tk.StringVar(value="30")
-        self.sheet_var = tk.StringVar()
         self.output_var = tk.StringVar(value=str(Path.cwd()))
         self.status_var = tk.StringVar(value="就绪")
 
@@ -33,6 +33,7 @@ class MuSplitterApp(tk.Tk):
             self.input_var.set(str(default_input))
 
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._sheet_names: list[str] = []
         self._worker: threading.Thread | None = None
 
         self._build_ui()
@@ -59,8 +60,21 @@ class MuSplitterApp(tk.Tk):
         ttk.Label(root, text="选择工作表：", font=("Microsoft YaHei UI", 10)).grid(
             row=1, column=0, sticky="w", pady=4
         )
-        self.sheet_combo = ttk.Combobox(root, textvariable=self.sheet_var, state="readonly")
-        self.sheet_combo.grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=4)
+        sheet_frame = ttk.Frame(root)
+        sheet_frame.grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=4)
+        sheet_frame.columnconfigure(0, weight=1)
+        sheet_frame.rowconfigure(0, weight=1)
+        self.sheet_listbox = tk.Listbox(
+            sheet_frame,
+            selectmode=tk.MULTIPLE,
+            exportselection=False,
+            height=5,
+            font=("Microsoft YaHei UI", 10),
+        )
+        self.sheet_listbox.grid(row=0, column=0, sticky="ew")
+        self.sheet_scrollbar = ttk.Scrollbar(sheet_frame, orient="vertical", command=self.sheet_listbox.yview)
+        self.sheet_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.sheet_listbox.configure(yscrollcommand=self.sheet_scrollbar.set)
         self.refresh_sheet_btn = ttk.Button(root, text="刷新工作表", command=self._on_refresh_sheets)
         self.refresh_sheet_btn.grid(row=1, column=2, pady=4)
 
@@ -153,7 +167,7 @@ class MuSplitterApp(tk.Tk):
             self.input_entry,
             self.input_btn,
             self.refresh_sheet_btn,
-            self.sheet_combo,
+            self.sheet_listbox,
             self.tlife_entry,
             self.slice_entry,
             self.drop_entry,
@@ -171,6 +185,14 @@ class MuSplitterApp(tk.Tk):
     def _on_refresh_sheets(self) -> None:
         self._load_sheets(show_popup=True)
 
+    def _selected_sheets(self) -> list[str]:
+        selected = [self._sheet_names[i] for i in self.sheet_listbox.curselection() if i < len(self._sheet_names)]
+        return selected
+
+    def _safe_dir_name(self, name: str) -> str:
+        cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "_", name).strip()
+        return cleaned or "sheet"
+
     def _load_sheets(self, show_popup: bool) -> None:
         raw_path = self.input_var.get().strip().strip('"')
         if not raw_path:
@@ -180,8 +202,8 @@ class MuSplitterApp(tk.Tk):
 
         input_path = Path(raw_path).expanduser()
         if not input_path.exists():
-            self.sheet_combo["values"] = ()
-            self.sheet_var.set("")
+            self._sheet_names = []
+            self.sheet_listbox.delete(0, tk.END)
             if show_popup:
                 messagebox.showerror("提示", "Excel 文件不存在。")
             return
@@ -195,20 +217,22 @@ class MuSplitterApp(tk.Tk):
             if not sheet_names:
                 raise ValueError("文件中没有可用工作表。")
         except Exception as exc:
-            self.sheet_combo["values"] = ()
-            self.sheet_var.set("")
+            self._sheet_names = []
+            self.sheet_listbox.delete(0, tk.END)
             self._append_log(f"读取工作表失败: {exc}")
             if show_popup:
                 messagebox.showerror("读取失败", str(exc))
             return
 
-        self.sheet_combo["values"] = sheet_names
-        current = self.sheet_var.get().strip()
-        if current in sheet_names:
-            self.sheet_var.set(current)
-        else:
-            self.sheet_var.set(sheet_names[0])
-        self.status_var.set(f"已加载 {len(sheet_names)} 个工作表")
+        self._sheet_names = sheet_names
+        self.sheet_listbox.delete(0, tk.END)
+        for s in sheet_names:
+            self.sheet_listbox.insert(tk.END, s)
+        default_count = min(2, len(sheet_names))
+        for i in range(default_count):
+            self.sheet_listbox.selection_set(i)
+
+        self.status_var.set(f"已加载 {len(sheet_names)} 个工作表，默认已选前 {default_count} 个")
         self._append_log(f"可选工作表: {', '.join(sheet_names)}")
 
     def _start_processing(self) -> None:
@@ -230,9 +254,9 @@ class MuSplitterApp(tk.Tk):
             if not output_dir_text:
                 output_dir_text = "."
             output_dir = Path(output_dir_text).expanduser()
-            sheet = self.sheet_var.get().strip()
-            if not sheet:
-                raise ValueError("请先选择工作表。")
+            sheets = self._selected_sheets()
+            if not sheets:
+                raise ValueError("请至少选择一个工作表。")
         except Exception as exc:
             messagebox.showerror("参数错误", str(exc))
             return
@@ -240,13 +264,13 @@ class MuSplitterApp(tk.Tk):
         self.status_var.set("处理中，请稍候...")
         self._append_log("开始处理...")
         self._append_log(f"输入文件: {input_path}")
-        self._append_log(f"工作表: {sheet}")
+        self._append_log(f"工作表: {', '.join(sheets)}")
         self._append_log(f"tlife: {tlife} 秒, 切片: {slice_seconds} 秒, 剔除窗口: {drop_minutes} 分钟")
         self._set_running(True)
 
         self._worker = threading.Thread(
             target=self._run_worker,
-            args=(input_path, tlife, slice_seconds, drop_minutes, sheet, output_dir),
+            args=(input_path, tlife, slice_seconds, drop_minutes, sheets, output_dir),
             daemon=True,
         )
         self._worker.start()
@@ -257,20 +281,32 @@ class MuSplitterApp(tk.Tk):
         tlife: float,
         slice_seconds: float,
         drop_minutes: float,
-        sheet: str | None,
+        sheets: list[str],
         output_dir: Path,
     ) -> None:
         try:
-            stats = process_xlsx(
-                input_path=input_path,
-                tlife=tlife,
-                slice_seconds=slice_seconds,
-                drop_minutes=drop_minutes,
-                sheet=sheet,
-                output_dir=output_dir,
-                progress_callback=lambda n: self._queue.put(("progress", n)),
-            )
-            self._queue.put(("done", stats))
+            all_stats: list[ProcessStats] = []
+            total = len(sheets)
+            for idx, sheet_name in enumerate(sheets, start=1):
+                if total == 1:
+                    current_output = output_dir
+                else:
+                    current_output = output_dir / f"{idx:02d}_{self._safe_dir_name(sheet_name)}"
+                self._queue.put(("sheet_start", (idx, total, sheet_name, current_output)))
+                stats = process_xlsx(
+                    input_path=input_path,
+                    tlife=tlife,
+                    slice_seconds=slice_seconds,
+                    drop_minutes=drop_minutes,
+                    sheet=sheet_name,
+                    output_dir=current_output,
+                    progress_callback=lambda n, sn=sheet_name, i=idx, t=total: self._queue.put(
+                        ("progress", (i, t, sn, n))
+                    ),
+                )
+                all_stats.append(stats)
+                self._queue.put(("sheet_done", (idx, total, stats)))
+            self._queue.put(("done", all_stats))
         except Exception as exc:
             tb = traceback.format_exc()
             self._queue.put(("error", (exc, tb)))
@@ -286,6 +322,19 @@ class MuSplitterApp(tk.Tk):
             f"输出目录: {stats.output_dir}"
         )
 
+    def _format_summary(self, all_stats: list[ProcessStats]) -> str:
+        valid_rows = sum(s.valid_rows for s in all_stats)
+        invalid_rows = sum(s.invalid_rows for s in all_stats)
+        dropped_rows = sum(s.dropped_rows for s in all_stats)
+        skipped_rows = sum(s.skipped_rows for s in all_stats)
+        scanned_rows = sum(s.scanned_rows for s in all_stats)
+        return (
+            f"全部工作表处理完成（{len(all_stats)} 个）\n"
+            f"有效数据总计: {valid_rows} 行\n"
+            f"失效数据总计: {invalid_rows} 行\n"
+            f"丢弃总计: {dropped_rows} 行, 跳过总计: {skipped_rows} 行, 扫描总计: {scanned_rows} 行"
+        )
+
     def _poll_queue(self) -> None:
         while True:
             try:
@@ -293,17 +342,26 @@ class MuSplitterApp(tk.Tk):
             except queue.Empty:
                 break
 
-            if event == "progress":
-                rows = int(payload)
-                self.status_var.set(f"处理中... 已扫描 {rows} 行")
-                self._append_log(f"已扫描 {rows} 行")
+            if event == "sheet_start":
+                idx, total, sheet_name, out_dir = payload
+                self.status_var.set(f"处理中... ({idx}/{total}) {sheet_name}")
+                self._append_log(f"[{idx}/{total}] 开始处理工作表: {sheet_name}")
+                self._append_log(f"输出目录: {out_dir}")
+            elif event == "progress":
+                idx, total, sheet_name, rows = payload
+                self.status_var.set(f"处理中... ({idx}/{total}) {sheet_name} 已扫描 {rows} 行")
+                self._append_log(f"[{idx}/{total}] {sheet_name}: 已扫描 {rows} 行")
+            elif event == "sheet_done":
+                idx, total, stats = payload
+                self._append_log(f"[{idx}/{total}] {stats.sheet_name} 已完成")
+                self._append_log(self._format_done(stats))
             elif event == "done":
-                stats = payload
+                all_stats = payload
                 self._set_running(False)
                 self.status_var.set("处理完成")
-                summary = self._format_done(stats)
+                summary = self._format_summary(all_stats)
                 self._append_log(summary)
-                messagebox.showinfo("完成", "处理完成，结果已输出到 valid / invalid 文件夹。")
+                messagebox.showinfo("完成", "处理完成，结果已输出。")
             elif event == "error":
                 exc, tb = payload
                 self._set_running(False)

@@ -5,3 +5,5 @@ invalid/
 __pycache__/
 main.spec
 icon.png
+dist/
+build/

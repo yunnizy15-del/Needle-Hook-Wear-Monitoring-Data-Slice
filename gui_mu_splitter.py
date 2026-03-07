@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import queue
@@ -7,6 +7,8 @@ import traceback
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+
+from openpyxl import load_workbook
 
 from split_mu_by_tlife import ProcessStats, process_xlsx
 
@@ -34,6 +36,8 @@ class MuSplitterApp(tk.Tk):
         self._worker: threading.Thread | None = None
 
         self._build_ui()
+        if default_input.exists():
+            self._load_sheets(show_popup=False)
         self.after(150, self._poll_queue)
 
     def _build_ui(self) -> None:
@@ -49,38 +53,42 @@ class MuSplitterApp(tk.Tk):
         )
         self.input_entry = ttk.Entry(root, textvariable=self.input_var)
         self.input_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=4)
-        ttk.Button(root, text="浏览...", command=self._choose_input).grid(row=0, column=2, pady=4)
+        self.input_btn = ttk.Button(root, text="浏览...", command=self._choose_input)
+        self.input_btn.grid(row=0, column=2, pady=4)
 
-        ttk.Label(root, text="tlife（秒）：", font=("Microsoft YaHei UI", 10)).grid(
+        ttk.Label(root, text="选择工作表：", font=("Microsoft YaHei UI", 10)).grid(
             row=1, column=0, sticky="w", pady=4
         )
-        self.tlife_entry = ttk.Entry(root, textvariable=self.tlife_var)
-        self.tlife_entry.grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=4)
+        self.sheet_combo = ttk.Combobox(root, textvariable=self.sheet_var, state="readonly")
+        self.sheet_combo.grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=4)
+        self.refresh_sheet_btn = ttk.Button(root, text="刷新工作表", command=self._on_refresh_sheets)
+        self.refresh_sheet_btn.grid(row=1, column=2, pady=4)
 
-        ttk.Label(root, text="切片秒数：", font=("Microsoft YaHei UI", 10)).grid(
+        ttk.Label(root, text="tlife（秒）：", font=("Microsoft YaHei UI", 10)).grid(
             row=2, column=0, sticky="w", pady=4
         )
-        self.slice_entry = ttk.Entry(root, textvariable=self.slice_seconds_var)
-        self.slice_entry.grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=4)
+        self.tlife_entry = ttk.Entry(root, textvariable=self.tlife_var)
+        self.tlife_entry.grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=4)
 
-        ttk.Label(root, text="剔除窗口（分钟）：", font=("Microsoft YaHei UI", 10)).grid(
+        ttk.Label(root, text="切片秒数：", font=("Microsoft YaHei UI", 10)).grid(
             row=3, column=0, sticky="w", pady=4
         )
-        self.drop_entry = ttk.Entry(root, textvariable=self.drop_minutes_var)
-        self.drop_entry.grid(row=3, column=1, sticky="ew", padx=(0, 8), pady=4)
+        self.slice_entry = ttk.Entry(root, textvariable=self.slice_seconds_var)
+        self.slice_entry.grid(row=3, column=1, sticky="ew", padx=(0, 8), pady=4)
 
-        ttk.Label(root, text="Sheet 名称（可选）：", font=("Microsoft YaHei UI", 10)).grid(
+        ttk.Label(root, text="剔除窗口（分钟）：", font=("Microsoft YaHei UI", 10)).grid(
             row=4, column=0, sticky="w", pady=4
         )
-        self.sheet_entry = ttk.Entry(root, textvariable=self.sheet_var)
-        self.sheet_entry.grid(row=4, column=1, sticky="ew", padx=(0, 8), pady=4)
+        self.drop_entry = ttk.Entry(root, textvariable=self.drop_minutes_var)
+        self.drop_entry.grid(row=4, column=1, sticky="ew", padx=(0, 8), pady=4)
 
         ttk.Label(root, text="输出目录：", font=("Microsoft YaHei UI", 10)).grid(
             row=5, column=0, sticky="w", pady=4
         )
         self.output_entry = ttk.Entry(root, textvariable=self.output_var)
         self.output_entry.grid(row=5, column=1, sticky="ew", padx=(0, 8), pady=4)
-        ttk.Button(root, text="浏览...", command=self._choose_output).grid(row=5, column=2, pady=4)
+        self.output_btn = ttk.Button(root, text="浏览...", command=self._choose_output)
+        self.output_btn.grid(row=5, column=2, pady=4)
 
         hint = (
             "规则：t < tlife-30分钟 记为有效；t > tlife+30分钟 记为失效；中间区间丢弃。\n"
@@ -128,6 +136,7 @@ class MuSplitterApp(tk.Tk):
         )
         if path:
             self.input_var.set(path)
+            self._load_sheets(show_popup=True)
 
     def _choose_output(self) -> None:
         path = filedialog.askdirectory(title="选择输出目录")
@@ -142,11 +151,14 @@ class MuSplitterApp(tk.Tk):
         state = tk.DISABLED if running else tk.NORMAL
         for widget in [
             self.input_entry,
+            self.input_btn,
+            self.refresh_sheet_btn,
+            self.sheet_combo,
             self.tlife_entry,
             self.slice_entry,
             self.drop_entry,
-            self.sheet_entry,
             self.output_entry,
+            self.output_btn,
             self.start_btn,
         ]:
             widget.configure(state=state)
@@ -155,6 +167,49 @@ class MuSplitterApp(tk.Tk):
             self.progress.start(12)
         else:
             self.progress.stop()
+
+    def _on_refresh_sheets(self) -> None:
+        self._load_sheets(show_popup=True)
+
+    def _load_sheets(self, show_popup: bool) -> None:
+        raw_path = self.input_var.get().strip().strip('"')
+        if not raw_path:
+            if show_popup:
+                messagebox.showerror("提示", "请先选择 Excel 文件。")
+            return
+
+        input_path = Path(raw_path).expanduser()
+        if not input_path.exists():
+            self.sheet_combo["values"] = ()
+            self.sheet_var.set("")
+            if show_popup:
+                messagebox.showerror("提示", "Excel 文件不存在。")
+            return
+
+        try:
+            wb = load_workbook(input_path, read_only=True, data_only=True)
+            try:
+                sheet_names = list(wb.sheetnames)
+            finally:
+                wb.close()
+            if not sheet_names:
+                raise ValueError("文件中没有可用工作表。")
+        except Exception as exc:
+            self.sheet_combo["values"] = ()
+            self.sheet_var.set("")
+            self._append_log(f"读取工作表失败: {exc}")
+            if show_popup:
+                messagebox.showerror("读取失败", str(exc))
+            return
+
+        self.sheet_combo["values"] = sheet_names
+        current = self.sheet_var.get().strip()
+        if current in sheet_names:
+            self.sheet_var.set(current)
+        else:
+            self.sheet_var.set(sheet_names[0])
+        self.status_var.set(f"已加载 {len(sheet_names)} 个工作表")
+        self._append_log(f"可选工作表: {', '.join(sheet_names)}")
 
     def _start_processing(self) -> None:
         if self._worker is not None and self._worker.is_alive():
@@ -175,7 +230,9 @@ class MuSplitterApp(tk.Tk):
             if not output_dir_text:
                 output_dir_text = "."
             output_dir = Path(output_dir_text).expanduser()
-            sheet = self.sheet_var.get().strip() or None
+            sheet = self.sheet_var.get().strip()
+            if not sheet:
+                raise ValueError("请先选择工作表。")
         except Exception as exc:
             messagebox.showerror("参数错误", str(exc))
             return
@@ -183,6 +240,7 @@ class MuSplitterApp(tk.Tk):
         self.status_var.set("处理中，请稍候...")
         self._append_log("开始处理...")
         self._append_log(f"输入文件: {input_path}")
+        self._append_log(f"工作表: {sheet}")
         self._append_log(f"tlife: {tlife} 秒, 切片: {slice_seconds} 秒, 剔除窗口: {drop_minutes} 分钟")
         self._set_running(True)
 

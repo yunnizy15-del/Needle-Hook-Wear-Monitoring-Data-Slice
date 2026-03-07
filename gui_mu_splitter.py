@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import queue
-import re
 import threading
 import traceback
 from pathlib import Path
@@ -189,10 +188,6 @@ class MuSplitterApp(tk.Tk):
         selected = [self._sheet_names[i] for i in self.sheet_listbox.curselection() if i < len(self._sheet_names)]
         return selected
 
-    def _safe_dir_name(self, name: str) -> str:
-        cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "_", name).strip()
-        return cleaned or "sheet"
-
     def _load_sheets(self, show_popup: bool) -> None:
         raw_path = self.input_var.get().strip().strip('"')
         if not raw_path:
@@ -287,23 +282,26 @@ class MuSplitterApp(tk.Tk):
         try:
             all_stats: list[ProcessStats] = []
             total = len(sheets)
+            valid_seq = 0
+            invalid_seq = 0
             for idx, sheet_name in enumerate(sheets, start=1):
-                if total == 1:
-                    current_output = output_dir
-                else:
-                    current_output = output_dir / f"{idx:02d}_{self._safe_dir_name(sheet_name)}"
-                self._queue.put(("sheet_start", (idx, total, sheet_name, current_output)))
+                self._queue.put(("sheet_start", (idx, total, sheet_name, output_dir)))
                 stats = process_xlsx(
                     input_path=input_path,
                     tlife=tlife,
                     slice_seconds=slice_seconds,
                     drop_minutes=drop_minutes,
                     sheet=sheet_name,
-                    output_dir=current_output,
+                    output_dir=output_dir,
+                    clear_output=(idx == 1),
+                    valid_start_seq=valid_seq,
+                    invalid_start_seq=invalid_seq,
                     progress_callback=lambda n, sn=sheet_name, i=idx, t=total: self._queue.put(
                         ("progress", (i, t, sn, n))
                     ),
                 )
+                valid_seq = stats.valid_last_seq
+                invalid_seq = stats.invalid_last_seq
                 all_stats.append(stats)
                 self._queue.put(("sheet_done", (idx, total, stats)))
             self._queue.put(("done", all_stats))
@@ -328,10 +326,14 @@ class MuSplitterApp(tk.Tk):
         dropped_rows = sum(s.dropped_rows for s in all_stats)
         skipped_rows = sum(s.skipped_rows for s in all_stats)
         scanned_rows = sum(s.scanned_rows for s in all_stats)
+        valid_files_total = all_stats[-1].valid_last_seq if all_stats else 0
+        invalid_files_total = all_stats[-1].invalid_last_seq if all_stats else 0
         return (
             f"全部工作表处理完成（{len(all_stats)} 个）\n"
             f"有效数据总计: {valid_rows} 行\n"
+            f"有效切片文件总计: {valid_files_total} 个\n"
             f"失效数据总计: {invalid_rows} 行\n"
+            f"失效切片文件总计: {invalid_files_total} 个\n"
             f"丢弃总计: {dropped_rows} 行, 跳过总计: {skipped_rows} 行, 扫描总计: {scanned_rows} 行"
         )
 

@@ -107,10 +107,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def ensure_output_dir(folder: Path) -> None:
+def ensure_output_dir(folder: Path, clear_existing: bool = True) -> None:
     folder.mkdir(parents=True, exist_ok=True)
-    for old_csv in folder.glob("*.csv"):
-        old_csv.unlink()
+    if clear_existing:
+        for old_csv in folder.glob("*.csv"):
+            old_csv.unlink()
 
 
 @dataclass
@@ -164,6 +165,8 @@ class ProcessStats:
     invalid_rows: int
     valid_files: int
     invalid_files: int
+    valid_last_seq: int
+    invalid_last_seq: int
 
 
 def process_xlsx(
@@ -173,6 +176,9 @@ def process_xlsx(
     drop_minutes: float = 30.0,
     sheet: Optional[str] = None,
     output_dir: Path = Path("."),
+    clear_output: bool = True,
+    valid_start_seq: int = 0,
+    invalid_start_seq: int = 0,
     progress_every: int = 200000,
     progress_callback: Optional[Callable[[int], None]] = None,
 ) -> ProcessStats:
@@ -184,6 +190,8 @@ def process_xlsx(
         raise ValueError("--drop-minutes must be >= 0.")
     if progress_every <= 0:
         raise ValueError("--progress_every must be > 0.")
+    if valid_start_seq < 0 or invalid_start_seq < 0:
+        raise ValueError("start seq must be >= 0.")
 
     drop_seconds = drop_minutes * SECONDS_PER_MINUTE
     valid_upper_bound = tlife - drop_seconds
@@ -192,11 +200,11 @@ def process_xlsx(
     output_root = output_dir.resolve()
     valid_dir = output_root / "valid"
     invalid_dir = output_root / "invalid"
-    ensure_output_dir(valid_dir)
-    ensure_output_dir(invalid_dir)
+    ensure_output_dir(valid_dir, clear_existing=clear_output)
+    ensure_output_dir(invalid_dir, clear_existing=clear_output)
 
-    valid_writer = SliceWriter(folder=valid_dir, slice_seconds=slice_seconds)
-    invalid_writer = SliceWriter(folder=invalid_dir, slice_seconds=slice_seconds)
+    valid_writer = SliceWriter(folder=valid_dir, slice_seconds=slice_seconds, file_seq=valid_start_seq)
+    invalid_writer = SliceWriter(folder=invalid_dir, slice_seconds=slice_seconds, file_seq=invalid_start_seq)
 
     wb = load_workbook(input_path, read_only=True, data_only=True)
     selected_sheet_name = ""
@@ -256,8 +264,10 @@ def process_xlsx(
         dropped_rows=dropped_rows,
         valid_rows=valid_writer.total_rows,
         invalid_rows=invalid_writer.total_rows,
-        valid_files=valid_writer.file_seq,
-        invalid_files=invalid_writer.file_seq,
+        valid_files=valid_writer.file_seq - valid_start_seq,
+        invalid_files=invalid_writer.file_seq - invalid_start_seq,
+        valid_last_seq=valid_writer.file_seq,
+        invalid_last_seq=invalid_writer.file_seq,
     )
 
 

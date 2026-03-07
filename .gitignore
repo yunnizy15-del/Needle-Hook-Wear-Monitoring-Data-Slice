@@ -1,1 +1,5 @@
-ignore.py
+data.xlsx
+~$data.xlsx
+valid/
+invalid/
+__pycache__/

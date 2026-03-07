@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import traceback
 from pathlib import Path
@@ -16,6 +17,7 @@ from split_mu_by_tlife import ProcessStats, process_xlsx
 class MuSplitterApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        self._set_app_icon()
         self.title("针钩摩擦系数数据切片工具")
         self.geometry("900x620")
         self.minsize(760, 520)
@@ -39,6 +41,16 @@ class MuSplitterApp(tk.Tk):
         if default_input.exists():
             self._load_sheets(show_popup=False)
         self.after(150, self._poll_queue)
+
+    def _set_app_icon(self) -> None:
+        # Prefer packaged resource path when running from PyInstaller.
+        base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        icon_path = base_dir / "app.ico"
+        if icon_path.exists():
+            try:
+                self.iconbitmap(str(icon_path))
+            except Exception:
+                pass
 
     def _build_ui(self) -> None:
         style = ttk.Style()

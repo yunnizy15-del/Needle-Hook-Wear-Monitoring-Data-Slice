@@ -9,14 +9,16 @@
 3. 支持命令行处理（CLI）。
 4. 输出统一保存到 `valid/` 和 `invalid/` 两个文件夹。
 5. 多工作表处理时，文件序号连续递增，不按工作表分目录。
+6. 支持先丢弃每个工作表前 `x` 小时数据（默认 `1h`）。
 
 ## 数据划分规则
 
 设 `drop_minutes` 默认为 30 分钟：
 
-1. `t < tlife - drop_minutes * 60` -> 有效数据（`valid`）
-2. `t > tlife + drop_minutes * 60` -> 失效数据（`invalid`）
-3. 中间区间（含边界）丢弃
+1. 先丢弃每个工作表前 `drop_initial_hours * 3600` 秒（默认 `1h`）。
+2. 对剩余数据：`t < tlife - drop_minutes * 60` -> 有效数据（`valid`）。
+3. 对剩余数据：`t > tlife + drop_minutes * 60` -> 失效数据（`invalid`）。
+4. 中间区间（含边界）丢弃。
 
 切片列：
 
@@ -52,7 +54,8 @@ python -m pip install -r requirement.txt
 3. 输入 `tlife`（秒）。
 4. 设置切片秒数（默认 `5`）。
 5. 设置剔除窗口分钟数（默认 `30`）。
-6. 选择输出目录并点击“开始处理”。
+6. 设置丢弃前 `x` 小时（默认 `1`）。
+7. 选择输出目录并点击“开始处理”。
 
 输出结构：
 
@@ -79,7 +82,7 @@ python -m pip install -r requirement.txt
 示例：
 
 ```powershell
-& .\.venv\Scripts\python.exe .\split_mu_by_tlife.py --input .\data.xlsx --tlife 36000 --slice-seconds 5 --drop-minutes 30 --sheet closed_loop_1 --output-dir .\result
+& .\.venv\Scripts\python.exe .\split_mu_by_tlife.py --input .\data.xlsx --tlife 36000 --slice-seconds 5 --drop-minutes 30 --drop-initial-hours 1 --sheet closed_loop_1 --output-dir .\result
 ```
 
 ## PyInstaller 打包

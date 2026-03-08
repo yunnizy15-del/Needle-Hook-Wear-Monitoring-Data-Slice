@@ -94,6 +94,12 @@ def parse_args() -> argparse.Namespace:
         help="Drop window on each side of tlife in minutes. Default: 30.",
     )
     parser.add_argument(
+        "--drop-initial-hours",
+        type=float,
+        default=1.0,
+        help="Drop data in the first x hours from each sheet start. Default: 1.",
+    )
+    parser.add_argument(
         "--sheet",
         default=None,
         help="Sheet name; default is the first sheet.",
@@ -161,6 +167,8 @@ class ProcessStats:
     scanned_rows: int
     skipped_rows: int
     dropped_rows: int
+    dropped_initial_rows: int
+    dropped_tlife_rows: int
     valid_rows: int
     invalid_rows: int
     valid_files: int
@@ -174,6 +182,7 @@ def process_xlsx(
     tlife: float,
     slice_seconds: float = 5.0,
     drop_minutes: float = 30.0,
+    drop_initial_hours: float = 1.0,
     sheet: Optional[str] = None,
     output_dir: Path = Path("."),
     clear_output: bool = True,
@@ -188,12 +197,15 @@ def process_xlsx(
         raise ValueError("--slice-seconds must be > 0.")
     if drop_minutes < 0:
         raise ValueError("--drop-minutes must be >= 0.")
+    if drop_initial_hours < 0:
+        raise ValueError("--drop-initial-hours must be >= 0.")
     if progress_every <= 0:
         raise ValueError("--progress_every must be > 0.")
     if valid_start_seq < 0 or invalid_start_seq < 0:
         raise ValueError("start seq must be >= 0.")
 
     drop_seconds = drop_minutes * SECONDS_PER_MINUTE
+    drop_initial_seconds = drop_initial_hours * 3600.0
     valid_upper_bound = tlife - drop_seconds
     invalid_lower_bound = tlife + drop_seconds
 
@@ -209,8 +221,10 @@ def process_xlsx(
     wb = load_workbook(input_path, read_only=True, data_only=True)
     selected_sheet_name = ""
     total_rows = 0
-    dropped_rows = 0
+    dropped_tlife_rows = 0
+    dropped_initial_rows = 0
     skipped_rows = 0
+    start_time_s: Optional[float] = None
     try:
         if sheet:
             if sheet not in wb.sheetnames:
@@ -238,12 +252,18 @@ def process_xlsx(
                 skipped_rows += 1
                 continue
 
+            if start_time_s is None:
+                start_time_s = time_s
+            if time_s < start_time_s + drop_initial_seconds:
+                dropped_initial_rows += 1
+                continue
+
             if time_s < valid_upper_bound:
                 valid_writer.write(time_s, mu_true)
             elif time_s > invalid_lower_bound:
                 invalid_writer.write(time_s, mu_true)
             else:
-                dropped_rows += 1
+                dropped_tlife_rows += 1
 
             if total_rows % progress_every == 0 and progress_callback is not None:
                 progress_callback(total_rows)
@@ -261,7 +281,9 @@ def process_xlsx(
         invalid_lower_bound=invalid_lower_bound,
         scanned_rows=total_rows,
         skipped_rows=skipped_rows,
-        dropped_rows=dropped_rows,
+        dropped_rows=dropped_initial_rows + dropped_tlife_rows,
+        dropped_initial_rows=dropped_initial_rows,
+        dropped_tlife_rows=dropped_tlife_rows,
         valid_rows=valid_writer.total_rows,
         invalid_rows=invalid_writer.total_rows,
         valid_files=valid_writer.file_seq - valid_start_seq,
@@ -298,6 +320,7 @@ def main() -> None:
         tlife=tlife,
         slice_seconds=args.slice_seconds,
         drop_minutes=args.drop_minutes,
+        drop_initial_hours=args.drop_initial_hours,
         sheet=args.sheet,
         output_dir=args.output_dir,
         progress_callback=lambda n: print(f"Processed {n} rows..."),
@@ -313,7 +336,9 @@ def main() -> None:
     print(f"Valid rows: {stats.valid_rows}, slice files: {stats.valid_files}")
     print(f"Invalid rows: {stats.invalid_rows}, slice files: {stats.invalid_files}")
     print(
-        f"Dropped rows: {stats.dropped_rows}, skipped rows: {stats.skipped_rows}, "
+        f"Dropped rows: {stats.dropped_rows} "
+        f"(initial: {stats.dropped_initial_rows}, tlife-window: {stats.dropped_tlife_rows}), "
+        f"skipped rows: {stats.skipped_rows}, "
         f"scanned rows: {stats.scanned_rows}"
     )
     print(f"Output directory: {stats.output_dir}")

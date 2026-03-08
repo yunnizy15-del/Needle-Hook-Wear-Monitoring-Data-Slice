@@ -26,6 +26,7 @@ class MuSplitterApp(tk.Tk):
         self.tlife_var = tk.StringVar()
         self.slice_seconds_var = tk.StringVar(value="5")
         self.drop_minutes_var = tk.StringVar(value="30")
+        self.drop_initial_hours_var = tk.StringVar(value="1")
         self.output_var = tk.StringVar(value=str(Path.cwd()))
         self.status_var = tk.StringVar(value="就绪")
 
@@ -107,24 +108,30 @@ class MuSplitterApp(tk.Tk):
         self.drop_entry = ttk.Entry(root, textvariable=self.drop_minutes_var)
         self.drop_entry.grid(row=4, column=1, sticky="ew", padx=(0, 8), pady=4)
 
-        ttk.Label(root, text="输出目录：", font=("Microsoft YaHei UI", 10)).grid(
+        ttk.Label(root, text="丢弃前 x 小时：", font=("Microsoft YaHei UI", 10)).grid(
             row=5, column=0, sticky="w", pady=4
         )
+        self.drop_initial_entry = ttk.Entry(root, textvariable=self.drop_initial_hours_var)
+        self.drop_initial_entry.grid(row=5, column=1, sticky="ew", padx=(0, 8), pady=4)
+
+        ttk.Label(root, text="输出目录：", font=("Microsoft YaHei UI", 10)).grid(
+            row=6, column=0, sticky="w", pady=4
+        )
         self.output_entry = ttk.Entry(root, textvariable=self.output_var)
-        self.output_entry.grid(row=5, column=1, sticky="ew", padx=(0, 8), pady=4)
+        self.output_entry.grid(row=6, column=1, sticky="ew", padx=(0, 8), pady=4)
         self.output_btn = ttk.Button(root, text="浏览...", command=self._choose_output)
-        self.output_btn.grid(row=5, column=2, pady=4)
+        self.output_btn.grid(row=6, column=2, pady=4)
 
         hint = (
             "规则：t < tlife-30分钟 记为有效；t > tlife+30分钟 记为失效；中间区间丢弃。\n"
             "输出：在输出目录下生成 valid / invalid 两个文件夹，按序号保存 CSV。"
         )
         ttk.Label(root, text=hint, foreground="#444").grid(
-            row=6, column=0, columnspan=3, sticky="w", pady=(6, 8)
+            row=7, column=0, columnspan=3, sticky="w", pady=(6, 8)
         )
 
         action_frame = ttk.Frame(root)
-        action_frame.grid(row=7, column=0, columnspan=3, sticky="ew")
+        action_frame.grid(row=8, column=0, columnspan=3, sticky="ew")
         action_frame.columnconfigure(0, weight=1)
 
         self.start_btn = ttk.Button(
@@ -139,12 +146,12 @@ class MuSplitterApp(tk.Tk):
         self.progress.grid(row=0, column=1, sticky="e")
 
         ttk.Label(root, textvariable=self.status_var, foreground="#0b62a4").grid(
-            row=8, column=0, columnspan=3, sticky="w", pady=(8, 6)
+            row=9, column=0, columnspan=3, sticky="w", pady=(8, 6)
         )
 
         log_frame = ttk.Frame(root)
-        log_frame.grid(row=9, column=0, columnspan=3, sticky="nsew")
-        root.rowconfigure(9, weight=1)
+        log_frame.grid(row=10, column=0, columnspan=3, sticky="nsew")
+        root.rowconfigure(10, weight=1)
         log_frame.rowconfigure(0, weight=1)
         log_frame.columnconfigure(0, weight=1)
 
@@ -182,6 +189,7 @@ class MuSplitterApp(tk.Tk):
             self.tlife_entry,
             self.slice_entry,
             self.drop_entry,
+            self.drop_initial_entry,
             self.output_entry,
             self.output_btn,
             self.start_btn,
@@ -253,10 +261,13 @@ class MuSplitterApp(tk.Tk):
             tlife = float(self.tlife_var.get().strip())
             slice_seconds = float(self.slice_seconds_var.get().strip())
             drop_minutes = float(self.drop_minutes_var.get().strip())
+            drop_initial_hours = float(self.drop_initial_hours_var.get().strip())
             if slice_seconds <= 0:
                 raise ValueError("切片秒数必须大于 0。")
             if drop_minutes < 0:
                 raise ValueError("剔除窗口分钟数不能小于 0。")
+            if drop_initial_hours < 0:
+                raise ValueError("丢弃前x小时不能小于 0。")
             output_dir_text = self.output_var.get().strip().strip('"')
             if not output_dir_text:
                 output_dir_text = "."
@@ -272,12 +283,23 @@ class MuSplitterApp(tk.Tk):
         self._append_log("开始处理...")
         self._append_log(f"输入文件: {input_path}")
         self._append_log(f"工作表: {', '.join(sheets)}")
-        self._append_log(f"tlife: {tlife} 秒, 切片: {slice_seconds} 秒, 剔除窗口: {drop_minutes} 分钟")
+        self._append_log(
+            f"tlife: {tlife} 秒, 切片: {slice_seconds} 秒, "
+            f"剔除窗口: {drop_minutes} 分钟, 丢弃前: {drop_initial_hours} 小时"
+        )
         self._set_running(True)
 
         self._worker = threading.Thread(
             target=self._run_worker,
-            args=(input_path, tlife, slice_seconds, drop_minutes, sheets, output_dir),
+            args=(
+                input_path,
+                tlife,
+                slice_seconds,
+                drop_minutes,
+                drop_initial_hours,
+                sheets,
+                output_dir,
+            ),
             daemon=True,
         )
         self._worker.start()
@@ -288,6 +310,7 @@ class MuSplitterApp(tk.Tk):
         tlife: float,
         slice_seconds: float,
         drop_minutes: float,
+        drop_initial_hours: float,
         sheets: list[str],
         output_dir: Path,
     ) -> None:
@@ -303,6 +326,7 @@ class MuSplitterApp(tk.Tk):
                     tlife=tlife,
                     slice_seconds=slice_seconds,
                     drop_minutes=drop_minutes,
+                    drop_initial_hours=drop_initial_hours,
                     sheet=sheet_name,
                     output_dir=output_dir,
                     clear_output=(idx == 1),
@@ -328,7 +352,9 @@ class MuSplitterApp(tk.Tk):
             f"丢弃区间: [{stats.valid_upper_bound:.3f}, {stats.invalid_lower_bound:.3f}] 秒\n"
             f"有效数据: {stats.valid_rows} 行, 文件: {stats.valid_files}\n"
             f"失效数据: {stats.invalid_rows} 行, 文件: {stats.invalid_files}\n"
-            f"丢弃: {stats.dropped_rows} 行, 跳过: {stats.skipped_rows} 行, 扫描: {stats.scanned_rows} 行\n"
+            f"丢弃: {stats.dropped_rows} 行 "
+            f"(前置丢弃: {stats.dropped_initial_rows}, tlife窗口丢弃: {stats.dropped_tlife_rows}), "
+            f"跳过: {stats.skipped_rows} 行, 扫描: {stats.scanned_rows} 行\n"
             f"输出目录: {stats.output_dir}"
         )
 
@@ -336,6 +362,8 @@ class MuSplitterApp(tk.Tk):
         valid_rows = sum(s.valid_rows for s in all_stats)
         invalid_rows = sum(s.invalid_rows for s in all_stats)
         dropped_rows = sum(s.dropped_rows for s in all_stats)
+        dropped_initial_rows = sum(s.dropped_initial_rows for s in all_stats)
+        dropped_tlife_rows = sum(s.dropped_tlife_rows for s in all_stats)
         skipped_rows = sum(s.skipped_rows for s in all_stats)
         scanned_rows = sum(s.scanned_rows for s in all_stats)
         valid_files_total = all_stats[-1].valid_last_seq if all_stats else 0
@@ -346,7 +374,9 @@ class MuSplitterApp(tk.Tk):
             f"有效切片文件总计: {valid_files_total} 个\n"
             f"失效数据总计: {invalid_rows} 行\n"
             f"失效切片文件总计: {invalid_files_total} 个\n"
-            f"丢弃总计: {dropped_rows} 行, 跳过总计: {skipped_rows} 行, 扫描总计: {scanned_rows} 行"
+            f"丢弃总计: {dropped_rows} 行 "
+            f"(前置丢弃: {dropped_initial_rows}, tlife窗口丢弃: {dropped_tlife_rows}), "
+            f"跳过总计: {skipped_rows} 行, 扫描总计: {scanned_rows} 行"
         )
 
     def _poll_queue(self) -> None:
